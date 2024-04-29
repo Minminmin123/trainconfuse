@@ -1,0 +1,116 @@
+import threading
+from flask import Flask, render_template
+from flask_socketio import SocketIO
+import socket
+
+app = Flask(__name__)
+socketio = SocketIO(app)  # SocketIO 객체 생성
+passenger_1 = passenger_2 = 1  # 초기 승객 정보 설정
+trainID = 1  # 초기 열차 ID 설정
+
+HOST = '172.30.1.5'
+PORT = 8888
+adu_HOST = '172.30.1.13'
+
+# 아두이노에서 받은 데이터를 처리하여 웹 소켓을 통해 웹 페이지를 업데이트합니다.
+# 아두이노에서 받은 데이터를 라즈베리파이 변수에 저장
+def divide_save_data(data):
+    global passenger_1, passenger_2, trainID
+    
+    if data.startswith('weight'):  # 데이터가 'weight'로 시작하는 경우
+        # 'weight,'를 지우고 ,를 기준으로 데이터를 분할
+        data = data.replace('weight,', '')
+        passenger_1, passenger_2 = map(int, data.split(','))
+    elif data.startswith('ID,'):
+        data = data.replace('ID,', '')
+        trainID = int(data)
+    else:
+        # 다른 경우에 대한 처리 (예: 에러 처리)
+        pass
+
+# 아두이노에 데이터 보내는 함수
+def send_commander(data):
+    print("send_commander function executed")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sa:
+        try:
+            sa.connect((adu_HOST, PORT))
+            print('Connected to Arduino:', adu_HOST, PORT)
+            sa.sendall(data.encode())  # Send the data received as argument
+            print('Data sent to Arduino:', data)
+        except ConnectionRefusedError:
+            print("Connection refused: Failed to connect to Arduino.")
+
+# 데이터를 수신하는 함수
+def receive_data():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((HOST, PORT))
+        s.listen()
+        print("Server listening on port", PORT)
+
+        try:
+            while True:
+                conn, addr = s.accept()
+                with conn:
+                    print('Connected by', addr) # 라즈베리파이에 연결한 아이피 주소 확인
+                    while True:
+                        data = conn.recv(1024)  # socket으로부터 최대 1024바이트 데이터 read
+                        if not data:
+                            break
+                        received_data = data.decode('utf-8').strip()  # 줄 바꿈 및 공백 제거
+                        if received_data:
+                            print("Received data:", received_data)
+                            divide_save_data(received_data)  # 받은 데이터를 처리하는 함수 호출
+                            send_commander(received_data)
+        finally:
+            s.close()
+
+# 데이터는 계속 받아야하니 멀티 스레드로 실행
+threading.Thread(target=receive_data).start()
+
+# @는 데코레이터, 조건 만족시 자동 실행 되는 부분
+
+# 웹 애플리케이션 라우트, html 요청 받으면 실행
+@app.route('/')
+def index():
+    global passenger_1, passenger_2, trainID
+
+    # 다음 열차 정보 설정
+    if trainID == 1:
+        next_train_info = "다음 열차: 소요산행" 
+    elif trainID == 2:
+        next_train_info = "다음 열차: 정발산행" 
+
+    if passenger_1 < 100: # 값이 작을수록 무거운 것이다.
+        image_passenger_1 = 1
+    elif passenger_1 < 200:
+        image_passenger_1 = 2
+    else:
+        image_passenger_1 = 3
+        
+    if passenger_2 < 100:
+        image_passenger_2 = 1
+    elif passenger_2 < 200:
+        image_passenger_2 = 2
+    else:
+        image_passenger_2 = 3    
+    
+    #이미지 파일 이름을 딕셔너리로 매칭
+    image_filenames = {
+        1: 'red.jpg',
+        2: 'green.jpg',
+        3: 'blue.jpg'
+    }
+
+    # 각 승객의 이미지 파일명을 가져와서 템플릿 렌더링
+    return render_template('index.html', image_filename1=image_filenames.get(image_passenger_1, 'default.jpg'),
+                           image_filename2=image_filenames.get(image_passenger_2, 'default.jpg'),
+                           next_train=next_train_info)
+
+# 클라이언트가 서버에 연결되었을 때 자동 실행
+@socketio.on('connect')
+def update_data():
+    global passenger_1, passenger_2
+    # 연결된 클라이언트에 현재 승객 정보를 전송
+    socketio.emit('update', {'passenger_1': passenger_1, 'passenger_2': passenger_2})
+
+socketio.run(app, host='0.0.0.0', port=5000)  # Flask 앱 실행
